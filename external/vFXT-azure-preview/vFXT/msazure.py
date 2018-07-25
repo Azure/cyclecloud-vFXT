@@ -1,17 +1,6 @@
 # Copyright (c) 2015-2018 Avere Systems, Inc.  All Rights Reserved.
-#
-#   Licensed under the Apache License, Version 2.0 (the "License");
-#   you may not use this file except in compliance with the License.
-#   You may obtain a copy of the License at
-#
-#       http://www.apache.org/licenses/LICENSE-2.0
-#
-#   Unless required by applicable law or agreed to in writing, software
-#   distributed under the License is distributed on an "AS IS" BASIS,
-#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#   See the License for the specific language governing permissions and
-#   limitations under the License.
-#
+# Copyright (c) Microsoft Corporation. All rights reserved.
+# Licensed under the MIT License. See LICENSE in the project root for license information.
 '''Abstraction for doing things on the instances via MS Azure
 
 Cookbook/examples:
@@ -88,6 +77,7 @@ from itertools import cycle
 from random import randrange
 import time
 
+
 # silence the azure sdk
 logging.getLogger('msrest.http_logger').setLevel(logging.ERROR)
 logging.getLogger('msrest.pipeline').setLevel(logging.ERROR)
@@ -100,13 +90,12 @@ logging.getLogger('requests_oauthlib.oauth2_session').setLevel(logging.CRITICAL)
 logging.getLogger('msrestazure.azure_active_directory').setLevel(logging.CRITICAL)
 logging.getLogger('keyring.backend').setLevel(logging.CRITICAL)
 
-import azure.storage
 import azure.storage.blob
 import azure.storage.common
 import azure.common.client_factory
 import azure.common.credentials
 import azure.mgmt.authorization
-import azure.mgmt.compute 
+import azure.mgmt.compute
 import azure.mgmt.network
 import azure.mgmt.storage
 import azure.mgmt.resource
@@ -188,7 +177,7 @@ class Service(ServiceBase):
     # 256 mentioned here: https://docs.microsoft.com/en-us/azure/virtual-machines/windows/managed-disks-overview
     VALID_DATA_DISK_SIZES = [128, 256, 512, 1024, 2048, 4095]
     MACHINE_TYPES = MACHINE_DEFAULTS.keys()
-    DEFAULTS_URL = 'https://averedist.blob.core.windows.net/dist/vfxtdefaults.json'
+    DEFAULTS_URL = 'https://averedistribution.blob.core.windows.net/public/vfxtdefaults.json'
     BLOB_HOST = 'blob.core.windows.net'
     BLOB_URL_FMT = 'https://{}.blob.core.windows.net/{}/{}' # account, container, blob
     DEFAULT_STORAGE_ACCOUNT_TYPE = 'Premium_LRS'
@@ -231,6 +220,13 @@ class Service(ServiceBase):
     COREFILER_TYPE = 'azure'
     COREFILER_CRED_TYPE = 'azure-storage'
     VALID_CACHING_OPTIONS = ['ReadOnly', 'ReadWrite', 'None']
+    METADATA_FETCH_RETRIES = 5
+    AUTO_LICENSE = True
+    WAIT_FOR_NIC = 180
+    WAIT_FOR_IPCONFIG = 180
+    REGIONS_WITH_3_FAULT_DOMAINS = ['canadacentral', 'centralus', 'eastus', 'eastus2', 'northcentralus', 'northeurope', 'southcentralus', 'westeurope', 'westus']
+    MAX_UPDATE_DOMAIN_COUNT = 20
+    ALLOCATE_INSTANCE_ADDRESSES = True
 
     def __init__(self, subscription_id=None, application_id=None, application_secret=None,
                        tenant_id=None, resource_group=None, storage_account=None,
@@ -244,6 +240,7 @@ class Service(ServiceBase):
                 tenant_id (str): AD application tenant identifier
                 resource_group (str): Resource group
                 storage_account (str): Azure Storage account
+                storage_resource_group (str, optional): Azure Storage account resource group (if different from the instance resource_group)
                 access_token (str, optional): Azure access token
 
                 location (str, optional): Azure location
@@ -284,8 +281,10 @@ class Service(ServiceBase):
 
         self.use_environment_for_auth = options.get('use_environment_for_auth') or False
 
-        self.network_resource_group = options.get('network_resourceg_group') or self.resource_group
+        self.network_resource_group = options.get('network_resource_group') or self.resource_group
         self.network_security_group = options.get('network_security_group') or None
+
+        self.storage_resource_group = options.get('storage_resource_group') or self.resource_group
 
         if not self.use_environment_for_auth:
             if not any([self.access_token, self.application_id]):
@@ -324,23 +323,6 @@ class Service(ServiceBase):
         except Exception as e:
             raise vFXTServiceConnectionFailure("Failed to establish connection to service: {}".format(e))
 
-        # XXX we assume a route table is present in the subnet for us to configure
-        try:
-            network = self.connection('network')
-            if self.subnets: # if we have subnets, check for a route table association
-                subnet = network.subnets.get(self.network_resource_group, self.network, self.subnets[0])
-                if not subnet.route_table:
-                    raise vFXTConfigurationException("No route table associated with the subnet")
-            else: # otherwise, we can only check for a route table
-                log.debug("No subnet configuration provided.  Checking for presence of route tables")
-                # listRouteTables returns a generator... we just check for at least one
-                if not next(iter(network.route_tables.list(self.network_resource_group)), None):
-                    raise vFXTConfigurationException("No route tables found.  Please create a route table and associate it with a subnet")
-        except vFXTConfigurationException:
-            raise
-        except Exception as e:
-            log.debug(e)
-            raise vFXTConfigurationException("Failed to validate subnet configuration: {}".format(e))
         return True
 
     def check(self, percentage=0.6, instances=0, machine_type=None, data_disk_type=None, data_disk_size=None, data_disk_count=None): #pylint: disable=unused-argument
@@ -394,7 +376,7 @@ class Service(ServiceBase):
 
             cloudstorage can take optional arguments
                 storage_account (str, optional): defaults to self.storage_account
-                resource_group (str, optional): defaults to self.resource_group
+                resource_group (str, optional): defaults to self.storage_resource_group
         '''
         # bookkeeping
         if not hasattr(self.local, 'connections'):
@@ -435,7 +417,7 @@ class Service(ServiceBase):
             # and less frequently used
             if connection_type == 'cloudstorage':
                 storage_account = options.get('storage_account') or self.storage_account
-                resource_group = options.get('resource_group') or self.resource_group
+                resource_group = options.get('resource_group') or self.storage_resource_group
                 keys = self.connection('storage').storage_accounts.list_keys(resource_group, storage_account).keys
                 if not keys:
                     raise vFXTConfigurationException("Unable to look up storage keys for {}".format(storage_account))
@@ -458,7 +440,6 @@ class Service(ServiceBase):
                             raise
             else:
                 if self.on_instance:
-                    log.debug("access_token = %s" % self.local.instance_data['access_token'])
                     creds = msrestazure.azure_active_directory.AADTokenCredentials(self.local.instance_data['access_token'])
                 else:
                     creds = azure.common.credentials.ServicePrincipalCredentials(self.application_id, self.application_secret, tenant=self.tenant_id)
@@ -519,9 +500,11 @@ class Service(ServiceBase):
                 except Exception as e:
                     log.debug(e)
                     attempts += 1
-                    if attempts == 3:
+                    if attempts == cls.METADATA_FETCH_RETRIES:
                         raise
                     time.sleep(backoff(attempts))
+                    # reconnect on failure
+                    conn = httplib.HTTPConnection(connection_host, connection_port, source_address=source_address, timeout=CONNECTION_TIMEOUT)
 
             # token metadata
             attempts = 0
@@ -537,9 +520,11 @@ class Service(ServiceBase):
                 except Exception as e:
                     log.debug(e)
                     attempts += 1
-                    if attempts == 3:
+                    if attempts == cls.METADATA_FETCH_RETRIES:
                         raise
                     time.sleep(backoff(attempts))
+                    # reconnect on failure
+                    conn = httplib.HTTPConnection(connection_host, connection_port, source_address=source_address, timeout=CONNECTION_TIMEOUT)
 
             instance_data['machine_type'] = instance_data['compute']['vmSize']
             instance_data['account_id'] = instance_data['compute']['subscriptionId']
@@ -561,6 +546,11 @@ class Service(ServiceBase):
                 proxy_uri (str, optional): URI of proxy resource
                 no_connection_test (bool, optional): skip connection tests, defaults to False
                 skip_load_defaults (bool, optional): do not fetch defaults
+                resource_group (str, optional): Resource group
+                network_resource_group (str, optional): Network resource group (if different from instance resource_group)
+                storage_resource_group (str, optional): Azure Storage account resource group (if different from the instance resource_group)
+                network (str, optional): Azure virtual network
+                subnet (str, optional): Azure virtual network subnets
 
             This is only meant to be called on instance.  Otherwise will
             raise a vFXTConfigurationException exception.
@@ -570,6 +560,12 @@ class Service(ServiceBase):
         no_connection_test = options.get('no_connection_test') or False
         skip_load_defaults = options.get('skip_load_defaults') or False
 
+        network = options.get('network') or None
+        subnet = options.get('subnet') or None
+        resource_group = options.get('resource_group') or None
+        network_resource_group = options.get('network_resource_group') or None
+        storage_resource_group = options.get('storage_resource_group') or None
+
         instance_data = cls.get_instance_data(source_address=source_address, no_connection_test=no_connection_test)
         log.debug('Read instance data: {}'.format(instance_data))
         try:
@@ -577,16 +573,19 @@ class Service(ServiceBase):
                               no_connection_test=no_connection_test,
                               subscription_id=str(instance_data['account_id']),
                               location=instance_data['compute']['location'],
-                              resource_group=instance_data['compute']['resourceGroupName'],
+                              resource_group=resource_group or instance_data['compute']['resourceGroupName'],
+                              network_resource_group=network_resource_group,
+                              storage_resource_group=storage_resource_group,
+                              subnet=subnet, network=network,
                               access_token=instance_data.get('access_token'),
                               on_instance=True, skip_load_defaults=skip_load_defaults,
             )
             service.local.instance_data = instance_data
 
             # detect our network/subnet by the instance NIC
-            #instance  = service.get_instance(instance_data['service_id'])
-            #if not instance:
-            #    raise vFXTConfigurationException("Unable to retrieve current instance")
+            instance  = service.get_current_instance()
+            if not instance:
+                raise vFXTConfigurationException("Unable to retrieve current instance")
 
             nic_id    = _get_nicid_from_cyclecloud()
             nic_name  = nic_id.split('/')[-1]
@@ -594,11 +593,16 @@ class Service(ServiceBase):
             nic       = service.connection('network').network_interfaces.get(nic_rsg, nic_name)
             subnet_id = nic.ip_configurations[0].subnet.id
 
-            service.subnets = [subnet_id.split('/')[-1]]
-            service.network = subnet_id.split('/')[-3]
+            if not subnet:
+                service.subnets = [subnet_id.split('/')[-1]]
+            if not network:
+                service.network = subnet_id.split('/')[-3]
             if nic.network_security_group:
                 service.network_security_group = nic.network_security_group.id.split('/')[-1]
-            service.network_resource_group = nic_rsg # our subnet/network may be in different resource groups
+            if not network_resource_group:
+                service.network_resource_group = nic_rsg # our subnet/network may be in different resource groups
+
+            service.tenant_id = instance.identity.tenant_id
 
             return service
         except (vFXTServiceFailure, vFXTServiceConnectionFailure) as e:
@@ -715,7 +719,7 @@ class Service(ServiceBase):
 
             try:
                 if operation.done() and operation.result().error:
-                    raise vFXTServiceTimeout("Failed waiting for {}: {}".format(msg, operation.result().error))
+                    raise vFXTServiceFailure("Failed waiting for {}: {}".format(msg, operation.result().error))
             except AttributeError: pass
 
             retries -= 1
@@ -775,10 +779,14 @@ class Service(ServiceBase):
         conn = self.connection()
         primary_ip = self.ip(instance)
 
-        op = conn.virtual_machines.delete(self.resource_group, self.name(instance))
-
-        # we wait because we cannot destroy resources still attached to the instance
-        self._wait_for_operation(op, msg='{} to be destroyed'.format(self.name(instance)), retries=wait)
+        try:
+            op = conn.virtual_machines.delete(self.resource_group, self.name(instance))
+            # we wait because we cannot destroy resources still attached to the instance
+            self._wait_for_operation(op, msg='{} to be destroyed'.format(self.name(instance)), retries=wait)
+        except vFXTServiceTimeout as e:
+            # Timeouts may just mean the azure python stack lost state...
+            log.error(e)
+            log.warning("Trying to clean up the rest of the resources for {}...".format(self.name(instance)))
 
         # Also need to delete any leftover disks
         try:
@@ -813,8 +821,8 @@ class Service(ServiceBase):
             nic_rsg = nic_id.split('/')[4]
             try:
                 nic = netconn.network_interfaces.get(nic_rsg, nic_name)
-                op = netconn.network_interfaces.delete(self.resource_group, nic_name)
-                self._wait_for_operation(op, msg='network interface {} to be deleted'.format(nic_name))
+                op = netconn.network_interfaces.delete(nic_rsg, nic_name)
+                self._wait_for_operation(op, retries=self.WAIT_FOR_NIC, msg='network interface {} to be deleted'.format(nic_name))
 
                 # if a public address is associated
                 for public_addr in [config.public_ip_address.id.split('/')[-1] for config in nic.ip_configurations if config.public_ip_address]:
@@ -977,7 +985,9 @@ class Service(ServiceBase):
                 enable_boot_diagnostics (bool, optional): Turn on boot diagnostics
                 advanced_networking (bool, optional): Turn on advanced networking (if image supports it)
                 private_ip_address (str, optional): primary private IP address
+                azure_role (str, optional): Azure role name to assign to the system provided identity
                 identity (str, optional): ARM resource identity reference (full path)
+                storage_account_type (str, optional): Storage account type for managed disks
         '''
         if not self.valid_instancename(name):
             raise vFXTConfigurationException("{} is not a valid instance name".format(name))
@@ -1004,11 +1014,11 @@ class Service(ServiceBase):
             'hardware_profile': {'vm_size': machine_type},
             'network_profile': {'network_interfaces': []},
             'storage_profile': {
-                'data_disks': [],
+                'data_disks': other_disks,
                 'os_disk': {
                     'caching': options.get('root_disk_caching') or 'None',
                     'name': root_disk_name,
-                    'managed_disk': {'storage_account_type': self.DEFAULT_STORAGE_ACCOUNT_TYPE},
+                    'managed_disk': {'storage_account_type': options.get('storage_account_type') or self.DEFAULT_STORAGE_ACCOUNT_TYPE},
                     'create_option': 'FromImage',
                     #'disk_size_gb': options.get('root_size') or None,
                 },
@@ -1024,6 +1034,14 @@ class Service(ServiceBase):
                 'type': 'SystemAssigned',
             }
         }
+
+        if body['tags']:
+            if len(body['tags']) > 15:
+                raise vFXTConfigurationException("Resources cannot have more than 15 tags")
+            if any([len(_) > 512 for _  in body['tags']]):
+                raise vFXTConfigurationException("Tag names cannot exceed 512 characters")
+            if any([len(body['tags'][_]) > 256 for _  in body['tags']]):
+                raise vFXTConfigurationException("Tag names cannot exceed 256 characters")
 
         admin_ssh_data = options.get('admin_ssh_data') or None
         if admin_ssh_data:
@@ -1089,6 +1107,12 @@ class Service(ServiceBase):
                 "sku": sku,
                 "version": version
             }
+            if pub == 'microsoft-avere':
+                body['plan'] = {
+                    "publisher": pub,
+                    "product": offer,
+                    "name": sku,
+                }
         else:
             # assume it is a managed image in our resource group
             try:
@@ -1129,18 +1153,23 @@ class Service(ServiceBase):
                 advanced_networking=adv_networking,
                 private_address = options.get('private_ip_address') or None
             )
+            nic_cfg = {'id': nic.id} # XXX 'primary': True
+            body['network_profile']['network_interfaces'].append(nic_cfg)
         except Exception as e:
             log.debug(e)
             raise vFXTServiceFailure("Failed to create NIC: {}".format(e))
-        nic_cfg = {'id': nic.id} # XXX 'primary': True
-        body['network_profile']['network_interfaces'].append(nic_cfg)
-
-        if other_disks:
-            body['storage_profile']['data_disks'] = other_disks
 
         log.debug("Create instance request body: {}".format(body))
 
         try:
+            # if we have to synchronize so that our vm creations batch properly
+            azure_nic_barrier = options.get('_azure_nic_barrier')
+            if azure_nic_barrier:
+                try:
+                    azure_nic_barrier.wait()
+                except BarrierTimeout:
+                    raise vFXTServiceFailure("Failed waiting for all network interfaces to create.")
+
             op = conn.virtual_machines.create_or_update(self.resource_group, name, body)
             wait_for_success = options.get('wait_for_success') or self.WAIT_FOR_SUCCESS
             self._wait_for_operation(op, msg="instance {} to be created".format(name), retries=wait_for_success)
@@ -1158,15 +1187,17 @@ class Service(ServiceBase):
             # try and give some error
             try:
                 instance_view = conn.virtual_machines.instance_view(self.resource_group, name)
-                for status in instance_view.statuses:
-                    log.debug("Instance view status for {}: {}".format(name, status))
-                    if status.level.name == 'error' and status.message:
-                        log.error("Instance create error for {}: {}".format(name, status.message))
-                for disk in instance_view.disks:
-                    for status in disk.statuses:
-                        log.debug("Instance view disk status for {}: {}".format(disk.name, status))
+                if instance_view.statuses:
+                    for status in instance_view.statuses or []:
+                        log.debug("Instance view status for {}: {}".format(name, status))
                         if status.level.name == 'error' and status.message:
-                            log.error("Instance disk create error for {}: {}".format(disk.name, status.message))
+                            log.error("Instance create error for {}: {}".format(name, status.message))
+                if instance_view.disks:
+                    for disk in instance_view.disks or []:
+                        for status in disk.statuses:
+                            log.debug("Instance view disk status for {}: {}".format(disk.name, status))
+                            if status.level.name == 'error' and status.message:
+                                log.error("Instance disk create error for {}: {}".format(disk.name, status.message))
             except Exception as instance_e:
                 log.debug("Failed while trying to read failed instance {}: {}".format(name, instance_e))
 
@@ -1271,10 +1302,18 @@ class Service(ServiceBase):
                 except:
                     continue
                 node_name = node['Name']
-                nnum = int(node_name.split("-")[-1])
+                for _nnum in node_name.split("-"):
+                    try: 
+                        nnum = int(_nnum)
+                        break
+                    except:
+                        continue
+                if not(nnum):
+                    raise ValueError("Could not parse int from %s" % node_name)
                 _instances[nnum] = instance_name
                 _states[nnum] = node['Status']
                 _rg[nnum] = node['azure']['resourcegroup']
+                log.info("found node_name=%s" % node_name)
                 log.info("found %d as %s" % (nnum, instance_name))
             if _instances.has_key(node_num):
                 if _states[node_num] == "Ready":
@@ -1282,7 +1321,9 @@ class Service(ServiceBase):
 
 
         conn = self.connection()
+        log.info("checking for instance with %s, %s" % (_rg[node_num], _instances[node_num]))
         instance = conn.virtual_machines.get(_rg[node_num], _instances[node_num])
+        log.info("found instance = %s" % instance)
         return instance
 
 
@@ -1300,7 +1341,7 @@ class Service(ServiceBase):
                 node_opts include:
                     data_disk_size (int): size of data disks
                     data_disk_count (int): number of data disks
-                    data_disk_caching (str, optional): None, ReadOnly, ReadWrite (defaults to None)
+                    data_disk_caching (str, optional): None, ReadOnly, ReadWrite (defaults to ReadOnly)
                     machine_type (str): machine type
                     root_image (str): VHD ID
 
@@ -1309,9 +1350,9 @@ class Service(ServiceBase):
             raise vFXTNodeExistsException("Node {} exists".format(node_name))
 
         data_disk_disks = []
-        data_disk_caching = node_opts.get('data_disk_caching') or None
+        data_disk_caching = node_opts.get('data_disk_caching') or 'ReadOnly'
         for idx in xrange(node_opts['data_disk_count']):
-            disk_name = '{}-data_disk-{}'.format(node_name, idx)
+            disk_name = '{}-data_disk-{}-{}'.format(node_name, idx, int(time.time()))
             data_disk = {
                 'name': disk_name,
                 'disk_size_gb': node_opts['data_disk_size'],
@@ -1329,6 +1370,7 @@ class Service(ServiceBase):
             other_disks=data_disk_disks,
             user_data=cfg,
             enable_ip_forwarding=True,
+            advanced_networking=True,
             **instance_options
         )
         log.info("Created {} ({})".format(self.name(n), self.ip(n)))
@@ -1344,8 +1386,8 @@ class Service(ServiceBase):
                 root_image (str, optional): root disk image name
                 data_disk_size (int, optional): size of data disk (or machine type default)
                 data_disk_count (int, optional): number of data disks (or machine type default)
-                data_disk_caching (str, optional): None, ReadOnly, ReadWrite (defaults to None)
-                root_disk_caching (str, optional): None, ReadOnly, ReadWrite (defaults to None)
+                data_disk_caching (str, optional): None, ReadOnly, ReadWrite (defaults to ReadOnly)
+                root_disk_caching (str, optional): None, ReadOnly, ReadWrite (defaults to ReadOnly)
                 wait_for_state (str, optional): red, yellow, green cluster state (defaults to yellow)
                 skip_cleanup (bool, optional): do not clean up on failure
                 azure_role (str, optional): Azure role name for the service principal (otherwise one is created)
@@ -1378,7 +1420,8 @@ class Service(ServiceBase):
         root_image        = options.get('root_image')      or self._get_default_image(location)
         data_disk_size    = options.get('data_disk_size')  or machine_defs['data_disk_size']
         data_disk_count   = options.get('data_disk_count') or machine_defs['data_disk_count']
-        data_disk_caching = options.get('data_disk_caching') or None
+        data_disk_caching = options.get('data_disk_caching') or 'ReadOnly'
+        options.setdefault('root_disk_caching', 'ReadOnly')
 
         # verify our data_disk_size is in self.VALID_DATA_DISK_SIZES
         if data_disk_size not in self.VALID_DATA_DISK_SIZES:
@@ -1387,7 +1430,9 @@ class Service(ServiceBase):
         if data_disk_count > machine_defs['max_data_disk_count']:
             raise vFXTConfigurationException('{} exceeds the maximum allowed disk count of {}'.format(data_disk_count, machine_defs['max_data_disk_count']))
 
-        ip_count = cluster_size + (1 if not options.get('management_address') else 0)
+        log.info('Creating cluster configuration')
+
+        ip_count = (cluster_size * 2) + (1 if not options.get('management_address') else 0)
         custom_ip_config_reqs = ['address_range_start', 'address_range_end', 'address_range_netmask']
         if all([options.get(_) for _ in custom_ip_config_reqs]):
             log.debug("Using overrides for cluster management and address range")
@@ -1396,13 +1441,25 @@ class Service(ServiceBase):
             if len(avail) < ip_count:
                 raise vFXTConfigurationException("Not enough addresses provided, require {}".format(ip_count))
         else:
+            if self.private_range:
+                if self._cidr_overlaps_network(self.private_range):
+                    raise vFXTConfigurationException("Range {} overlaps with the virtual network {} address space".format(self.private_range, self.network))
             mgmt_requested = options.get('management_address') or None
             in_use = [mgmt_requested] if mgmt_requested else None
             avail, mask = self.get_available_addresses(count=ip_count, contiguous=True, in_use=in_use)
 
         cluster.mgmt_ip = options.get('management_address') or avail.pop(0)
-        cluster_ips     = avail
+        private_ips     = avail[0:cluster_size]
+        cluster_ips     = avail[cluster_size:]
         cluster.network_security_group = options.get('network_security_group') or self.network_security_group
+
+        subnet = self.connection('network').subnets.get(self.network_resource_group, self.network, subnets[0])
+        if not Cidr(subnet.address_prefix).contains(cluster_ips[0]):
+            # if we are NOT inside the subnet range we will need a route table
+            if not subnet.route_table:
+                raise vFXTConfigurationException("Subnet {} does not have an associated route table".format(subnets[0]))
+            # we must not assign the private addresses that are not part of the subnet range
+            private_ips = [None] * cluster_size
 
         # store for cluster config
         cluster.mgmt_netmask     = mask
@@ -1410,7 +1467,6 @@ class Service(ServiceBase):
         cluster.cluster_ip_end   = cluster_ips[-1]
         cluster.subnets = [subnets[0]] # first node subnet
 
-        log.info('Creating cluster configuration')
         cfg = cluster.cluster_config(expiration=options.get('config_expiration', None))
 
         log.debug("Generated cluster config: {}".format(cfg))
@@ -1428,12 +1484,12 @@ class Service(ServiceBase):
                 log.info('Using existing cluster role {}'.format(role))
                 cluster.role = self._get_role(role)
 
-            # availability set (we can keep creating it as thats just an update operation)
+            # availability set (we can keep creating it as it is just an update operation)
             availability_set = options.get('availability_set') or '{}-availability_set'.format(cluster.name)
             cluster.availability_set = self._create_availability_set(availability_set)
             options['availability_set'] = availability_set
 
-            instance_addresses = options.pop('instance_addresses', [None] * cluster_size)
+            instance_addresses = options.pop('instance_addresses', private_ips)
             if len(instance_addresses) != cluster_size:
                 raise vFXTConfigurationException("Not enough instance addresses provided, require {}".format(cluster_size))
 
@@ -1445,8 +1501,9 @@ class Service(ServiceBase):
             options['subnet'] = subnets[0] # first node subnet
             options['private_ip_address'] = instance_addresses.pop(0)
             n = self.create_node(name, cfg, node_opts=opts, instance_options=options)
+            log.info("Created node : %s" % n)
             cluster.nodes.append(ServiceInstance(service=self, instance=n))
-
+            log.info("Created service instance from node : %s" % n)
             threads = []
             if not options.get('skip_configuration'):
                 t = threading.Thread(target=cluster.first_node_configuration)
@@ -1506,6 +1563,14 @@ class Service(ServiceBase):
         if len(instance_addresses) != count:
             raise vFXTConfigurationException("Not enough instance addresses provided, require {}".format(count))
 
+        try:
+            if instance.os_profile.linux_configuration.ssh and 'admin_ssh_data' not in options:
+                options['admin_ssh_data'] = instance.os_profile.linux_configuration.ssh.public_keys[0].key_data
+        except Exception: pass
+
+        if cluster.role:
+            options['azure_role'] = cluster.role.role_name
+
         # set network security group for added nodes
         options['network_security_group'] = cluster.network_security_group
 
@@ -1543,18 +1608,23 @@ class Service(ServiceBase):
 
         # Requires cluster be online
         # XXX assume our node name always ends in the node number
-        # updated -1 to -2 for CycleCloud naming
+        for i in cluster.nodes:
+            log.info("Assume %s ends in node number." % i.name())
         max_node_num = max([int(i.name().split('-')[-2]) for i in cluster.nodes])
         joincfg     = cluster.cluster_config(joining=True, expiration=options.get('config_expiration', None))
 
         nodeq   = Queue.Queue()
         failq   = Queue.Queue()
         threads = []
+        #options['_azure_nic_barrier'] = Barrier(count, self.WAIT_FOR_SUCCESS)
+        options['_azure_nic_barrier'] = None 
 
         def cb(nodenum, inst_opts, nodeq, failq):
             '''callback'''
             try:
                 name = '{}-{:02}'.format(cluster.name, nodenum)
+                log.info("Sleeping for %d" % nodenum * 10)
+                time.sleep(10*nodenum)
                 n = self.create_node(name, joincfg, node_opts=opts, instance_options=inst_opts)
                 nodeq.put(n)
             except Exception as e:
@@ -1629,11 +1699,12 @@ class Service(ServiceBase):
                         for n in [xmlrpc.node.get(name)[name]]
                         if 'primaryClusterIP' in n])
 
-        nics = list(self.connection('network').network_interfaces.list(self.network_resource_group))
         instances = set()
-        for nic in nics:
+        for nic in self.connection('network').network_interfaces.list(self.network_resource_group):
             for ip_config in nic.ip_configurations:
                 if ip_config.private_ip_address in node_ips:
+                    if not nic.virtual_machine or not nic.virtual_machine.id:
+                        raise vFXTServiceFailure("Network interface is not attached to any instances: {}".format(nic.name))
                     instances.add(nic.virtual_machine.id.split('/')[-1])
         instances = list(instances)
 
@@ -1655,12 +1726,12 @@ class Service(ServiceBase):
                 availability_set = instances[0].availability_set.id.split('/')[-1]
                 cluster.availability_set = self.connection().availability_sets.get(cluster.service.resource_group, availability_set)
 
-            #cluster.name = self.CLUSTER_NODE_NAME_RE.search(cluster.nodes[0].name()).groups()[0]
-            #cluster.role = None
-            #try: # try and find the cluster role
-            #    cluster.role = self._instance_identity_custom_role(instances[0])
-            #except Exception as e:
-            #    log.debug("Failed to lookup cluster role: {}".format(e))
+            cluster.name = self.CLUSTER_NODE_NAME_RE.search(cluster.nodes[0].name()).groups()[0]
+            cluster.role = None
+            try: # try and find the cluster role
+                cluster.role = self._instance_identity_custom_role(instances[0])
+            except Exception as e:
+                log.debug("Failed to lookup cluster role: {}".format(e))
 
             # try and find the network security group
             try:
@@ -1810,7 +1881,7 @@ class Service(ServiceBase):
 
         data_disks = []
         for idx in xrange(int(data_disk_count)):
-            disk_name = '{}-data_disk-{}'.format(self.name(instance), idx)
+            disk_name = '{}-data_disk-{}-{}'.format(self.name(instance), idx, int(time.time()))
             # TODO maybe we could check shelve error for disk, query it exists
             # and use createOption: Attach
             data_disks.append({
@@ -1818,7 +1889,7 @@ class Service(ServiceBase):
                 'diskSizeGB': data_disk_size,
                 'createOption': 'Empty',
                 'caching': data_disk_caching,
-                'managed_disk': {'storage_account_type': self.DEFAULT_STORAGE_ACCOUNT_TYPE},
+                'managed_disk': {'storage_account_type': options.get('storage_account_type') or self.DEFAULT_STORAGE_ACCOUNT_TYPE},
                 'lun': str(idx),
             })
         try:
@@ -1917,16 +1988,14 @@ class Service(ServiceBase):
         blob_srv = conn.create_page_blob_service()
 
         try:
-            storage_account_props = self.connection('storage').storage_accounts.get_properties(self.resource_group, storage_account)
+            storage_account_props = self.connection('storage').storage_accounts.get_properties(self.storage_resource_group, storage_account)
             if storage_account_props.sku.tier.name == 'premium':
-                raise Exception("premium tier is not supported")
-            if storage_account_props.kind.name == 'storage_v2':
-                raise Exception("v2 storage account types are not supported")
+                raise Exception("Premium tier storage accounts are not supported")
 
             log.debug("storage account type {}".format(storage_account_props.sku.name.value))
         except Exception as e:
             log.debug("Failed to validate storage account: {}".format(e))
-            raise vFXTConfigurationException("{} is not a valid storage account".format(storage_account))
+            raise vFXTConfigurationException("{} is not a valid storage account: {}".format(storage_account, e))
 
         xmlrpc = cluster.xmlrpc() if xmlrpc is None else xmlrpc
         cred = 'azure-storage-{}'.format(storage_account)
@@ -1977,8 +2046,9 @@ class Service(ServiceBase):
         try:
             if self.network:
                 network = self._get_network()
-                if network.dhcp_options.dns_servers:
+                if network.dhcp_options and network.dhcp_options.dns_servers:
                     return network.dhcp_options.dns_servers
+                log.debug("No dns configuration in the network DHCP options")
         except Exception as e:
             log.debug("Failed to look up environment dns configuration: {}".format(e))
         return self.DNS_SERVERS
@@ -2005,11 +2075,16 @@ class Service(ServiceBase):
         netmask    = '255.255.255.255'
 
         if not addr_range:
-            network       = self._get_network()
-            network_range = sorted([_ for _ in network.address_space.address_prefixes], key=lambda x: Cidr(x).addr)[-1]
-            network_c     = Cidr(network_range)
-            addr_range    ='{}/{}'.format(Cidr.to_address(network_c.end()+1),
-                                network_range.split('/')[-1])
+            network = self._get_network()
+            for subnet in network.subnets:
+                if subnet.name == self.subnets[0]:
+                    addr_range = subnet.address_prefix
+                    log.debug("Using range {} from subnet {}".format(addr_range, subnet.name))
+                    break
+            if not addr_range:
+                raise vFXTConfigurationException("Unable to find subnet {}".format(self.subnets[0]))
+        else:
+            log.debug("Using specified address range {}".format(addr_range))
 
         used = self.in_use_addresses(addr_range)
         if in_use:
@@ -2023,7 +2098,7 @@ class Service(ServiceBase):
                 netmask   = addr_cidr.netmask
             return (avail, netmask)
         except Exception as e:
-            raise vFXTConfigurationException(e)
+            raise vFXTConfigurationException("Check that the subnet or specified address range has enough free addresses: {}".format(e))
 
     def add_instance_address(self, instance, address, **options):
         '''Add a new route to the instance
@@ -2039,51 +2114,71 @@ class Service(ServiceBase):
             raise vFXTConfigurationException("{} already assigned to {}".format(address, self.name(instance)))
 
         conn = self.connection('network')
-
         subnet = self._instance_subnet(instance)
-        if not subnet.route_table:
-            raise vFXTConfigurationException("Unable to find a route table")
-        route_table_id = subnet.route_table.id
-        route_table = route_table_id.split('/')[-1] # XXX subnet.route_table.name empty?
-        resource_group = route_table_id.split('/')[4] # XXX no subnet.route_table.resource_group
+        resource_group = subnet.id.split('/')[4]
 
         try:
             dest = '{}/32'.format(address)
-            addr = Cidr(dest)
-            # XXX this is a convention
-            addr_name = '{}-{}'.format(self.name(instance), addr.address.replace('.', '-'))
+            addr = Cidr(dest) # validate
+            ipcfg_name = '{}-{}'.format(self.name(instance), addr.address.replace('.', '-')) # XXX this is a convention
 
-            # check for existing
-            existing = []
-            rt = conn.route_tables.get(resource_group, route_table)
-            for route in rt.routes:
-                if route.next_hop_type != 'VirtualAppliance':
-                    continue
-                if route.address_prefix == dest:
-                    existing.append(route)
+            # address in subnet range, we use IP configurations
+            if Cidr(subnet.address_prefix).contains(address):
 
-            if existing:
-                if not options.get('allow_reassignment', True):
-                    raise vFXTConfigurationException("Route already assigned for {}".format(dest))
-                for route in existing:
-                    route_name = route.name
-                    log.debug("Removing existing route {}".format(route_name))
-                    op = conn.routes.delete(resource_group, route_table, route_name)
+                # check for existing
+                existing = self._who_has_ip(address)
+                if existing:
+                    if not options.get('allow_reassignment', True):
+                        raise vFXTConfigurationException("Address {} already assigned to {}".format(address, existing.name))
+                    self.remove_instance_address(existing, address)
+
+                nic = self._instance_primary_nic(instance)
+                nic_data = nic.serialize()
+                new_ip = {
+                    'properties': {
+                        'subnet': {'id': subnet.id},
+                        'privateIPAllocationMethod': 'static',
+                        'privateIPAddress': address,
+                    },
+                    'name': ipcfg_name,
+                }
+                nic_data['properties']['ipConfigurations'].append(new_ip)
+
+                op = conn.network_interfaces.create_or_update(resource_group, nic.name, nic_data)
+                self._wait_for_operation(op, retries=self.WAIT_FOR_IPCONFIG, msg='{} to be assigned to {}'.format(address, nic.name))
+
+            # otherwise we use routes
+            else:
+                if not subnet.route_table:
+                    raise vFXTConfigurationException("Subnet {} does not have an associated route table".format(subnet.name))
+
+                route_table = subnet.route_table.id.split('/')[-1]
+                rt = conn.route_tables.get(resource_group, route_table)
+                for route in rt.routes:
+                    if route.next_hop_type != 'VirtualAppliance':
+                        continue
+                    if route.address_prefix != dest:
+                        continue
+                    if not options.get('allow_reassignment', True):
+                        raise vFXTConfigurationException("Route already assigned for {}".format(dest))
+                    log.debug("Removing existing route {}".format(route.name))
+                    op = conn.routes.delete(resource_group, route_table, route.name)
                     self._wait_for_operation(op, msg='route to be removed')
 
-            # add the route
-            body = {
-                'address_prefix': dest,
-                'next_hop_type': 'VirtualAppliance',
-                'next_hop_ip_address': self.ip(instance)
-            }
-            op = conn.routes.create_or_update(resource_group, route_table, addr_name, body)
-            self._wait_for_operation(op, msg='route to be created')
+                # add the route
+                body = {
+                    'address_prefix': dest,
+                    'next_hop_type': 'VirtualAppliance',
+                    'next_hop_ip_address': self.ip(instance)
+                }
+                op = conn.routes.create_or_update(resource_group, route_table, ipcfg_name, body)
+                self._wait_for_operation(op, msg='route to be created')
+
         except vFXTConfigurationException:
             raise
         except Exception as e:
             log.debug(e)
-            raise vFXTServiceFailure("Failed to add route for {}: {}".format(address, e))
+            raise vFXTServiceFailure("Failed to add address {} to {}: {}".format(address, self.name(instance), e))
 
     def remove_instance_address(self, instance, address):
         '''Remove an instance route address
@@ -2094,45 +2189,51 @@ class Service(ServiceBase):
 
             Raises: vFXTServiceFailure
         '''
-        conn = self.connection('network')
-        primary_ip = self.ip(instance)
-
         if address not in self.instance_in_use_addresses(instance):
             raise vFXTConfigurationException("{} is not assigned to {}".format(address, self.name(instance)))
 
+        conn = self.connection('network')
         subnet = self._instance_subnet(instance)
-        if not subnet.route_table:
-            raise vFXTConfigurationException("Unable to find a route table")
-        resource_group = subnet.id.split('/')[4] # XXX no subnet.resource_group
-        route_table_id = subnet.route_table.id
-        route_table = route_table_id.split('/')[-1] # XXX subnet.route_table.name empty?
+        resource_group = subnet.id.split('/')[4]
 
-        to_remove = []
         try:
-            rt = conn.route_tables.get(resource_group, route_table)
-            for route in rt.routes:
-                if route.next_hop_type != 'VirtualAppliance':
-                    continue
-                if route.next_hop_ip_address != primary_ip:
-                    continue
-                addr = Cidr(route.address_prefix).address
-                if addr == address:
-                    to_remove.append(route)
+            # address in subnet range, we use IP configurations
+            if Cidr(subnet.address_prefix).contains(address):
+                nic = self._instance_primary_nic(instance)
+                nic_data = nic.serialize()
+                ip_configurations = nic_data['properties']['ipConfigurations']
+                nic_data['properties']['ipConfigurations'] = [_ for _ in ip_configurations if _['properties']['privateIPAddress'] != address]
+
+                op = conn.network_interfaces.create_or_update(resource_group, nic.name, nic_data)
+                self._wait_for_operation(op, retries=self.WAIT_FOR_IPCONFIG, msg='{} to be removed from {}'.format(address, nic.name))
+
+            # otherwise we use routes
+            else:
+                if not subnet.route_table:
+                    raise vFXTConfigurationException("Subnet {} does not have an associated route table".format(subnet.name))
+
+                primary_ip = self.ip(instance)
+                route_table = subnet.route_table.id.split('/')[-1]
+                rt = conn.route_tables.get(resource_group, route_table)
+                to_remove = []
+                for route in rt.routes:
+                    if route.next_hop_type != 'VirtualAppliance':
+                        continue
+                    if route.next_hop_ip_address != primary_ip:
+                        continue
+                    route_addr = Cidr(route.address_prefix).address
+                    if route_addr == address:
+                        to_remove.append(route)
+                if to_remove:
+                    for route in to_remove:
+                        op = conn.routes.delete(resource_group, route_table, route.name)
+                        self._wait_for_operation(op, msg='route to be removed')
+
         except Exception as e:
             log.debug(e)
-            raise vFXTServiceFailure("Failed to read route table entries for {}".format(address))
+            raise vFXTServiceFailure("Failed to remove address {} from {}: {}".format(address, self.name(instance), e))
 
-        if to_remove:
-            try:
-                for route in to_remove:
-                    route_name = route.name
-                    op = conn.routes.delete(resource_group, route_table, route_name)
-                    self._wait_for_operation(op, msg='route to be removed')
-            except Exception as e:
-                log.debug(e)
-                raise vFXTServiceFailure("Failed to remove route for {}".format(address))
-
-    def in_use_addresses(self, cidr_block, **options):
+    def in_use_addresses(self, cidr_block, **options): #pylint: disable=unused-argument
         '''Return a list of in use addresses within the specified cidr
 
             Arguments:
@@ -2141,17 +2242,15 @@ class Service(ServiceBase):
         '''
         conn        = self.connection('network')
         c           = Cidr(cidr_block)
-        resource_group = options.get('resource_group') or self.network_resource_group
         addresses   = set()
-        nics        = list(conn.network_interfaces.list(resource_group)) # faster to fetch all up front
 
-        for nic in nics:
+        for nic in conn.network_interfaces.list_all():
             for ip_config in nic.ip_configurations:
                 addr = ip_config.private_ip_address
                 if c.contains(addr):
                     addresses.add(addr)
 
-        for rt in conn.route_tables.list(resource_group):
+        for rt in conn.route_tables.list_all(): # all resource groups
             for route in rt.routes:
                 if route.next_hop_type != 'VirtualAppliance':
                     continue
@@ -2159,7 +2258,35 @@ class Service(ServiceBase):
                 if c.contains(addr):
                     addresses.add(addr)
 
+        for gw in conn.application_gateways.list_all():
+            for ipconfig in gw.frontend_ip_configurations:
+                addr = ipconfig.private_ip_address
+                if addr and c.contains(addr):
+                    addresses.add(addr)
+
+        for lb in conn.load_balancers.list_all():
+            for ipconfig in lb.frontend_ip_configurations:
+                addr = ipconfig.private_ip_address
+                if addr and c.contains(addr):
+                    addresses.add(addr)
+
+        for ss in self.connection('compute').virtual_machine_scale_sets.list_all():
+            try:
+                rg = ss.virtual_machine_profile.network_profile.network_interface_configurations[0].ip_configurations[0].subnet.id.split('/')[4]
+                for nic in conn.network_interfaces.list_virtual_machine_scale_set_network_interfaces(rg, ss.name):
+                    for ipconfig in nic.ip_configurations:
+                        addresses.add(ipconfig.private_ip_address)
+            except Exception as e:
+                log.debug('in_use_addresses scale set check failed: {}'.format(e))
+        log.info("in-use addresses = %s" % addresses)
         return list(addresses)
+
+    def _who_has_ip(self, address):
+        netconn = self.connection('network')
+        for nic in netconn.network_interfaces.list(self.network_resource_group):
+            for ipconfig in nic.ip_configurations:
+                if address == ipconfig.private_ip_address:
+                    return self.get_instance(nic.virtual_machine.id.split('/')[-1])
 
     def instance_in_use_addresses(self, instance, category='all'):
         '''Get the in use addresses for the instance
@@ -2171,24 +2298,24 @@ class Service(ServiceBase):
             To obtain the public instance address, use 'public' category.  This
             is not included with 'all'.
         '''
-        public_addresses = set()
         addresses = set()
         conn = self.connection('network')
 
         subnet = self._instance_subnet(instance)
         resource_group = subnet.id.split('/')[4] # XXX no subnet.resource_group
 
-        if category in ['all', 'instance']:
-            for iface in instance.network_profile.network_interfaces:
-                iface_id = iface.id
-                iface_name = iface_id.split('/')[-1]
-                resource_group = iface_id.split('/')[4] # use the instances nic resource_group
-                interface = conn.network_interfaces.get(resource_group, iface_name)
-                for ipconfig in interface.ip_configurations:
+        for iface in instance.network_profile.network_interfaces:
+            iface_id = iface.id
+            iface_name = iface_id.split('/')[-1]
+            resource_group = iface_id.split('/')[4] # use the instances nic resource_group
+            interface = conn.network_interfaces.get(resource_group, iface_name)
+            for ipconfig in interface.ip_configurations:
+                if category in ['all', 'instance']:
                     addresses.add(ipconfig.private_ip_address)
+                if category in ['public']:
                     if ipconfig.public_ip_address:
                         pia = conn.public_ip_addresses.get(resource_group, ipconfig.public_ip_address.id.split('/')[-1])
-                        public_addresses.add(pia.ip_address)
+                        addresses.add(pia.ip_address)
 
         if category in ['all', 'routes']:
             primary_ip = self.ip(instance)
@@ -2199,9 +2326,6 @@ class Service(ServiceBase):
                     if route.next_hop_ip_address == primary_ip:
                         addresses.add(Cidr(route.address_prefix).address)
 
-        # for special requests
-        if category == 'public':
-            return list(addresses.union(public_addresses))
         return list(addresses)
 
     def export(self):
@@ -2230,6 +2354,8 @@ class Service(ServiceBase):
                 data[attr] = val
         if self.network_resource_group != self.resource_group:
             data['network_resource_group'] = self.network_resource_group
+        if self.storage_resource_group != self.resource_group:
+            data['storage_resource_group'] = self.storage_resource_group
         if self.use_environment_for_auth:
             data['use_environment_for_auth'] = self.use_environment_for_auth
             data['access_token'] = self.connection().config.credentials._token_retriever() # XXX?
@@ -2330,6 +2456,7 @@ class Service(ServiceBase):
         network = network or self.network
         subnet = subnet or self.subnets[0]
         location = location or self.location
+        resource_group = resource_group or self.network_resource_group
 
         data = {
             'location': location,
@@ -2357,21 +2484,21 @@ class Service(ServiceBase):
                 }
                 log.debug("Creating public ip address {}-public-address: {}".format(name, body))
                 op = conn.public_ip_addresses.create_or_update(resource_group, '{}-public-address'.format(name), body)
-                self._wait_for_operation(op, msg='IP address to be created', retries=ServiceBase.CLOUD_API_RETRIES)
+                self._wait_for_operation(op, msg='IP address to be created')
 
                 public_address = conn.public_ip_addresses.get(resource_group, '{}-public-address'.format(name))
                 log.info("Created {}-public-address".format(name))
                 data['ip_configurations'][0]['public_ip_address'] = {'id': public_address.id}
             except Exception as e:
-                # TODO make this fatal?
                 log.error("Failed to create {}-public-address: {}".format(name, e))
+                raise
 
         if network_security_group:
             data['network_security_group'] = {'id': self._network_security_group_scope(network_security_group)}
 
         log.debug("Creating network interface {}: {}".format(name,data))
         op = conn.network_interfaces.create_or_update(resource_group, name, data)
-        self._wait_for_operation(op, msg='network interface to be created')
+        self._wait_for_operation(op, retries=self.WAIT_FOR_NIC, msg='network interface {} to be created'.format(name))
         log.info("Created network interface {}".format(name))
         return conn.network_interfaces.get(resource_group, name)
 
@@ -2408,7 +2535,7 @@ class Service(ServiceBase):
             try:
                 r = conn.role_definitions.create_or_update(self._resource_group_scope(), role_id, body)
                 if not r:
-                    raise Exception("Failed to create role")
+                    raise Exception("Failed to create role {}".format(name))
                 log.debug("Created role {} with body {}".format(r.id, body))
                 return r
             except Exception as e:
@@ -2434,7 +2561,7 @@ class Service(ServiceBase):
         # may need to retry if it was recently created
         while True:
             try:
-                roles = [_ for _ in conn.role_definitions.list(self._resource_group_scope()) if role_name == _.role_name]
+                roles = [_ for _ in conn.role_definitions.list(self._subscription_scope()) if role_name == _.role_name]
                 if roles and roles[0]:
                     return roles[0]
                 raise Exception("No such role: {}".format(role_name))
@@ -2443,6 +2570,7 @@ class Service(ServiceBase):
                 time.sleep(self.POLLTIME)
                 if retries == 0:
                     raise vFXTConfigurationException("Role {} not found".format(role_name))
+                log.warn("Failed to lookup role {}, retrying".format(role_name))
             retries -= 1
 
     def _delete_role(self, role_name):
@@ -2463,7 +2591,7 @@ class Service(ServiceBase):
             assignments = [_ for _ in conn.role_assignments.list() if role.id == _.role_definition_id]
             for assignment in assignments:
                 # this will fail if we do not have permissions
-                conn.role_assignments.delete(self._resource_group_scope(), assignment.name)
+                conn.role_assignments.delete(assignment.scope, assignment.name)
 
             # this will fail if we do not have permissions
             conn.role_definitions.delete(self._resource_group_scope(), role.id)
@@ -2499,15 +2627,21 @@ class Service(ServiceBase):
         retries = options.get('retries') or self.NEW_ROLE_FETCH_RETRY
         while True:
             try:
-                r = conn.role_assignments.create(self._resource_group_scope(), association_id, body)
+                scope = self._resource_group_scope()
+                # if we span resource groups, the scope must be on the subscription
+                if self.network_resource_group != self.resource_group:
+                    scope = self._subscription_scope()
+                r = conn.role_assignments.create(scope, association_id, body)
                 if not r:
                     raise Exception("Failed to assign role {} to principal {}".format(role_name, principal))
-                log.debug("Assigned role {} with principal {}: {}".format(role_name, principal, body))
+                log.debug("Assigned role {} with principal {} to scope {}: {}".format(role_name, principal, scope, body))
                 return r
             except Exception as e:
                 log.debug(e)
                 if retries == 0:
                     raise vFXTServiceFailure("Failed to assign role {}: {}".format(role_name, e))
+                log.warn("Failed to assign role {} to principal {}, retrying".format(role_name, principal))
+                time.sleep(self.POLLTIME)
             retries -= 1
 
     def _create_availability_set(self, name, **options):
@@ -2521,9 +2655,13 @@ class Service(ServiceBase):
         '''
         conn = self.connection()
 
+        location = options.get('location') or self.location
+        fault_domain_count = 3 if location in self.REGIONS_WITH_3_FAULT_DOMAINS else 2
+
         body = {
-            'location': options.get('location') or self.location,
-            'platform_fault_domain_count': 2, # some regions support 3... 2 is safe
+            'location': location,
+            'platform_fault_domain_count': fault_domain_count,
+            'platform_update_domain_count': self.MAX_UPDATE_DOMAIN_COUNT,
             'sku': {'name': 'aligned'},
         }
         try:
@@ -2614,10 +2752,12 @@ class Service(ServiceBase):
 
         size = best_size
 
-        # better to use 512MB disks if possible, up to a point
-        if cache_size >= 512 and cache_size <= 4096:
+        if cache_size >= 256 and cache_size <= 1024:
+            size = 256
+        # better to use 512GB disks if possible, up to a point
+        elif cache_size > 1024 and cache_size <= 4096:
             size = 512
-        elif cache_size >= 512 and cache_size <= 8192:
+        elif cache_size > 4096 and cache_size <= 8192:
             size = 1024
 
         count = int((cache_size+size-1) / size)
@@ -2644,8 +2784,12 @@ class Service(ServiceBase):
             This may not be available if we are unable to fetch the defaults.
         '''
         try:
-            return self.defaults[location]['current']
-        except:
+            if location in self.defaults:
+                return self.defaults[location]['current']
+            else:
+                return self.defaults['machineimages']['current']
+            raise Exception("no disk found")
+        except Exception:
             raise vFXTConfigurationException("You must provide a root disk image.")
 
     def _subscription_scope(self):
@@ -2701,7 +2845,7 @@ class Service(ServiceBase):
         name = name or url.path.split('/')[-1].replace('.vhd', '')
         try:
             img = conn.images.get(self.resource_group, name)
-            if img.locadtion == self.location:
+            if img.location == self.location:
                 return img
             name = '{}-{}'.format(name, self.location)
         except Exception:
@@ -2724,6 +2868,16 @@ class Service(ServiceBase):
         op = conn.images.create_or_update(self.resource_group, name, params)
         self._wait_for_operation(op, msg='image to be created')
         return conn.images.get(self.resource_group, name)
+
+    def _cidr_overlaps_network(self, cidr_range):
+        cidr = Cidr(cidr_range)
+        network = self._get_network()
+        for address_prefix in [subnet.address_prefix for subnet in network.subnets]:
+            address_cidr = Cidr(address_prefix)
+            if address_cidr.contains(cidr.start_address()):
+                return True
+        return False
+
 
 def _get_nicid_from_cyclecloud():
     cluster_name = jetpack.config.get("cyclecloud.cluster.name")

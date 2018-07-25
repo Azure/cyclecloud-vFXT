@@ -78,12 +78,12 @@
       SSD = true
       Azure.Lun = 3
 
-    [[[volume d2]]]
+    [[[volume d4]]]
       Size = 512
       SSD = true
       Azure.Lun = 4
 
-    [[[volume d3]]]
+    [[[volume d5]]]
       Size = 512
       SSD = true
       Azure.Lun = 5

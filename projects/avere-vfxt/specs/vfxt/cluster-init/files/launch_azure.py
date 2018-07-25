@@ -78,7 +78,12 @@ az.network_resource_group = network_rg
 cluster = Cluster.create(az, vmsize, '%s-%s' % (cluster_name,_now), cluster_pass,
                     root_image="microsoft-avere:vfxt:avere-vfxt-node:1.0.2",
                     azure_role="Contributor",
-                    size=size)
+                    size=size,
+                    management_address='10.0.1.20',
+                    address_range_start='10.0.1.21',
+                    address_range_end='10.0.1.26',
+                    address_range_netmask='255.255.255.255')
+
 
 print("VFXTPARSE cluster.mgmt_ip = %s" % cluster.mgmt_ip) 
 _store = {"mgmt_ip" : cluster.mgmt_ip}
@@ -94,7 +99,11 @@ try:
     # storage account resource group
     az.resource_group = network_rg
     cluster.make_test_bucket(bucketname="%s/vfxt%s" % (storage_account,_now), corefiler='azure')
-    cluster.add_vserver('vserver')
+    cluster.add_vserver('vserver',
+                netmask='255.255.255.255',
+                start_address='10.0.1.30',
+                end_address='10.0.1.32')
+
     cluster.add_vserver_junction('vserver', 'azure')
 except Exception as e:
     # cluster resource group

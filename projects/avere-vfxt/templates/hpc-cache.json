@@ -18,7 +18,7 @@
     },
     "subnet1Prefix": {
       "type": "string",
-      "defaultValue": "10.0.2.0/24",
+      "defaultValue": "10.0.0.0/24",
       "metadata": {
         "description": "Subnet 1 Prefix"
       }
@@ -32,7 +32,7 @@
     },
     "subnet2Prefix": {
       "type": "string",
-      "defaultValue": "10.0.0.0/24",
+      "defaultValue": "10.0.1.0/24",
       "metadata": {
         "description": "Subnet 2 Prefix"
       }

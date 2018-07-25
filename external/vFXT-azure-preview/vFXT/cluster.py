@@ -242,7 +242,8 @@ class Cluster(object):
         if options.get('management_address'):
             requested_mgmt_ip = options.get('management_address')
             if service.in_use_addresses('{}/32'.format(requested_mgmt_ip)):
-                raise vFXTConfigurationException("The requested management address {} is already in use".format(requested_mgmt_ip))
+                pass 
+                #raise vFXTConfigurationException("The requested management address {} is already in use".format(requested_mgmt_ip))
 
         # machine type is validated by service create_cluster
 
