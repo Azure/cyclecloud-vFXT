@@ -43,13 +43,13 @@ cluster_rg = this_node['Azure']['ResourceGroup']
 vfxt_settings = jetpack.config.get("vfxt")
 
 #/subscriptions/e3786699-5116-4dc9-82c6-a8aab043fb85/resourceGroups/lsf-udzsxznabzd5bflifulahbzeme/providers/Microsoft.Network/virtualNetworks/VNet1
+
 d = jetpack.config.get('vfxt')['cluster']
 subscription_id = d['subnet_id'].split('/')[2]
 network_rg = d['subnet_id'].split('/')[4]
 network_name = d['subnet_id'].split('/')[8]
 subnet_name = d['subnet_id'].split('/')[10]
 storage_account = d['storage_account']
-
 
 location = jetpack.config.get("azure.metadata.compute.location")
 cluster_pass = d['password']
@@ -68,7 +68,8 @@ az = Service.environment_init(resource_group=network_rg,
                     location=location,
                     network=network_name,
                     subnet=subnet_name,
-                    no_connection_test=True)
+                    no_connection_test=True,
+                    use_cycle_api=True)
 
 az.check()
 # cluster resource group
@@ -108,7 +109,7 @@ try:
 except Exception as e:
     # cluster resource group
     az.resource_group = cluster_rg
-    cluster.destroy()
+    #cluster.destroy(quick_destroy=True)
     raise
 
 xml = cluster.xmlrpc()

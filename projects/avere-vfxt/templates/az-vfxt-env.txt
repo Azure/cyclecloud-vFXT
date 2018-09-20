@@ -21,6 +21,7 @@
     ImageName = cycle.image.centos7
     IsReturnProxy = true
     SubnetId = ${vnet.resources[strcat(ClusterName, "-vnet")].properties.subnets.access.id}
+    Azure.Identities = $ManagedIdentity1
 
       [[[cluster-init avere-vfxt:default:$ProjectVersion]]]
       [[[cluster-init avere-vfxt:vfxt:$ProjectVersion]]]
@@ -45,13 +46,18 @@
     Azure.Publisher = microsoft-avere 
     Azure.Offer = vfxt
     Azure.Sku = avere-vfxt-node
-    Azure.ImageVersion = 1.0.2
+    Azure.ImageVersion = 5.0.1
     Azure.OS = linux
     AwaitInstallation = False
     MachineType = $MachineType
     SubnetId = ${vnet.resources[strcat(ClusterName, "-vnet")].properties.subnets.cache.id}
     Azure.AllocationMethod=standalone
     UserData = blank
+
+    AvailabilitySet.Name = ${ClusterName}-vFXT
+    AvailabilitySet.PlatformFaultDomainCount = 2
+    AvailabilitySet.PlatformUpdateDomainCount = 20
+    AvailabilitySet.Sku = aligned
 
     InstallJetpack = False
     
@@ -112,9 +118,15 @@
     DefaultValue = ~/.ssh/id_rsa_container
     Required = True
 
+    [[parameter ManagedIdentity1]]
+    Label = Controller ID
+    Description = Controller AAD User Assigned Managed Identity
+    ParameterType = Azure.ManagedIdentity
+    Required = True
+
     [[parameter ManagedIdentity2]]
-    Label = ManagedID
-    Description = AAD User Assigned Managed Identity
+    Label = Cluster ID
+    Description = Controller AAD User Assigned Managed Identity
     ParameterType = Azure.ManagedIdentity
     Required = True
 

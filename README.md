@@ -2,38 +2,22 @@
 
 This project will allow you to create and manage a vFXT cluster in CycleCloud.  
 
-### Creating a user managed identity with appropriate permissions
+### Creating user managed identities with appropriate permissions
 
 This project relies on a User Managed Identity. Azure CycleCloud will poll your tenant to find identities. When docs are public this repo will point to Avere vFXT documentation.  
 
-To setup the Managed Identity
+There are two separate managed identities required; One for the controller node and
+the other for the storage cluster nodes.  Create the identities and assign them roles
+with the following example using the az-cli.
 
-    az identity create -g ${ResourceGroup} --name ${IDName}
-    az role definition create --role-definition AvereClusterRole.json
-    az role assignment create -g ${ResourceGroup} --assignee ${IDName} --role avere-cluster-role-${NAME}
-
-where `AvereClusterRole.json` is:
-```json
-{
-    "Name": "avere-cluster-role-${NAME}",
-    "Actions": [
-        "Microsoft.Compute/virtualMachines/read",
-        "Microsoft.Network/networkInterfaces/read", "Microsoft.Network/virtualNetworks/subnets/read",
-        "Microsoft.Network/routeTables/read",
-        "Microsoft.Network/routeTables/routes/*",
-        "Microsoft.Resources/subscriptions/resourceGroups/read", "Microsoft.Storage/storageAccounts/blobServices/containers/delete", "Microsoft.Storage/storageAccounts/blobServices/containers/read", "Microsoft.Storage/storageAccounts/blobServices/containers/write"
-    ],
-    "DataActions": [
-        "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/delete", "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read","Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write"
-    ],
-    "NotActions": [],
-    "AssignableScopes": ["/subscriptions/<subscription ID>"],
-    "Description": "Avere Cluster Role",
-    "IsCustom": "true"
-}
+```bash
+az identity create -g ${ResourceGroup} --name ${IDName1}
+az role assignment create -g ${ResourceGroup} --assignee ${IDName1} --role "Contributor"
+az identity create -g ${ResourceGroup} --name ${IDName2}
+az role assignment create -g ${ResourceGroup} --assignee ${IDName2} --role "Avere Cluster Runtime Operator"
 ```
 
-When you start the vFXT cluster in CycleCloud you'll see the identity `avere-cluster-role-${IDName}` in the drop menu.
+When you start the vFXT cluster in CycleCloud you'll see the identities in the drop menu.
 
 ### Uploading the project to your locker
 
@@ -99,11 +83,13 @@ Primarily, we add the vFXT mount block.  This mount block then depends on the av
 
 ### External Code
 
-This project contains a branch of the Microsoft vFXT project. If you wish to make changes to this branch, make the changes in `/external/vFXT-azure-preview` then stage them for upload.
+This project depends on the [Avere SDK](https://github.com/Azure/AvereSDK). A tar
+archive of this repo must be added to the project cluster-init.  
 
-```
-cd external
-tar -czvf vFXT-azure-preview.tgz vFXT-azure-preview/
-cp vFXT-azure-preview.tgz ../specs/vfxt/cluster-init/files/
+```bash
+git clone git@github.com:Azure/AvereSDK.git
+tar -czvf AvereSDK AvereSDK.tgz
+mv AvereSDK.tgz cyclecloud-vFXT/projects/avere-vfxt/specs/vfxt/cluster-init/files/
+cd cyclecloud-vFXT/projects/avere-vfxt
 cyclecloud project upload
 ```

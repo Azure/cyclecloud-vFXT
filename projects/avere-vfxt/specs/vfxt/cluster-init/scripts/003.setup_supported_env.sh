@@ -16,8 +16,8 @@ unzip -o cyclecloud-cli.zip
 pip install cyclecloud-cli-installer-7.4.0-SNAPSHOT/packages/cyclecloud-cli-sdist.tar.gz
 
 
-tar -xf vFXT-azure-preview.tgz
-pushd vFXT-azure-preview
+tar -xf AvereSDK.tgz
+pushd AvereSDK/
 python setup.py install
 for VAR in 'azure-mgmt-compute' 'azure-cli-core' 'azure-mgmt-resource' 'azure-mgmt-storage' 'azure-mgmt-network' 'azure-mgmt-authorization>=0.40.0' 'azure-mgmt-msi' 'azure-storage-common' 'azure-storage-blob' 
 do
