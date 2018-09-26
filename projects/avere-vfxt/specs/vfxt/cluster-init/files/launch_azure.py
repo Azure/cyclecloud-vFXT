@@ -8,6 +8,7 @@ import jetpack.autoscale
 import cyclecli
 import pickle
 import netaddr
+import traceback
 
 _store = {}
 
@@ -46,15 +47,22 @@ vfxt_settings = jetpack.config.get("vfxt")
 
 d = jetpack.config.get('vfxt')['cluster']
 subscription_id = d['subnet_id'].split('/')[2]
+assert subscription_id
 network_rg = d['subnet_id'].split('/')[4]
+assert network_rg
 network_name = d['subnet_id'].split('/')[8]
+assert network_name
 subnet_name = d['subnet_id'].split('/')[10]
+assert subnet_name
 storage_account = d['storage_account']
 
 location = jetpack.config.get("azure.metadata.compute.location")
 cluster_pass = d['password']
 tenant_id = d['tenant_id']
 vmsize = d['vmsize']
+# TODO RDH
+vmsize = "Standard_D16s_v3"
+
 
 try:
     size = d['size']
@@ -77,7 +85,7 @@ az.resource_group = cluster_rg
 az.network_resource_group = network_rg
 
 cluster = Cluster.create(az, vmsize, '%s-%s' % (cluster_name,_now), cluster_pass,
-                    root_image="microsoft-avere:vfxt:avere-vfxt-node:1.0.2",
+                    root_image="microsoft-avere:vfxt:avere-vfxt-node:5.0.1",
                     azure_role="Contributor",
                     size=size,
                     management_address='10.0.1.20',
@@ -107,6 +115,8 @@ try:
 
     cluster.add_vserver_junction('vserver', 'azure')
 except Exception as e:
+    # TODO RDH - should only do this if cluster.destroy also fails.
+    original_tb = traceback.format_exc()
     # cluster resource group
     az.resource_group = cluster_rg
     #cluster.destroy(quick_destroy=True)
