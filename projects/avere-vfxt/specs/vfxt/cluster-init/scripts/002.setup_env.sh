@@ -1,11 +1,25 @@
-#!/bin/bash
-exit
-set -x
+#!/bin/bash -e
+
 pushd $CYCLECLOUD_SPEC_PATH/files
 
-tar -xf vfxt.tgz
-pushd external
-source /mnt/scratch/.venv/cc-vfxt/bin/activate
-python setup.py install
-popd
+rm -rf /root/.venv/vfxt-azure
+mkdir -p /root/.venv/vfxt-azure
+virtualenv /root/.venv/vfxt-azure
 
+jetpack download --project $CYCLECLOUD_PROJECT_NAME jetpack-SNAPSHOT.tar.gz ./
+jetpack download --project $CYCLECLOUD_PROJECT_NAME cyclecloud-cli.zip ./
+
+source /root/.venv/vfxt-azure/bin/activate
+pip install netaddr
+pip install jetpack-SNAPSHOT.tar.gz
+unzip -o cyclecloud-cli.zip
+pip install cyclecloud-cli-installer-7.4.0-SNAPSHOT/packages/cyclecloud-cli-sdist.tar.gz
+
+rm -rf AvereSDK
+mkdir AvereSDK
+pushd AvereSDK/
+tar -xf ../AvereSDK.tgz
+pip install .
+popd # AvereSDK
+
+popd # files

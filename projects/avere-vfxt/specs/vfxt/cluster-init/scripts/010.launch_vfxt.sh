@@ -1,4 +1,5 @@
 #!/bin/bash -e
+az login -i
 set -ex
 pushd /root
 LAUNCH=$CYCLECLOUD_SPEC_PATH/files/launch_azure.py
