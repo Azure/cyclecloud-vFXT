@@ -10,11 +10,27 @@ There are two separate managed identities required; One for the controller node 
 the other for the storage cluster nodes.  Create the identities and assign them roles
 with the following example using the az-cli.
 
+
+
 ```bash
 az identity create -g ${ResourceGroup} --name ${IDName1}
-az role assignment create -g ${ResourceGroup} --assignee ${IDName1} --role "Contributor"
+az role assignment create --assignee-object-id ${IDName1PrincipalId} --role "Contributor"
 az identity create -g ${ResourceGroup} --name ${IDName2}
-az role assignment create -g ${ResourceGroup} --assignee ${IDName2} --role "Avere Cluster Runtime Operator"
+az role assignment create --assignee-object-id ${IDName2-PrincipalId} --role "Avere Cluster Runtime Operator"
+```
+
+```json
+{
+  "clientId": "396efc5f-175a-4de3-919e-bf65e2697dca",
+  "id": "/subscriptions/f16e7574-eecb-46b9-8adb-855b92f7b572/resourcegroups/demo-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/avere-storage",
+  "location": "westus2",
+  "name": "avere-storage",
+  "principalId": "48f57d96-18d9-41b6-9fc3-1ca4674828de",
+  "resourceGroup": "demo-rg",
+  "tags": {},
+  "tenantId": "e5e7f63d-cf83-4e0b-aec9-25102ff37db3",
+  "type": "Microsoft.ManagedIdentity/userAssignedIdentities"
+}
 ```
 
 When you start the vFXT cluster in CycleCloud you'll see the identities in the drop menu.
