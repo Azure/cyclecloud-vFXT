@@ -8,7 +8,8 @@
   ParameterValues.vnetName = ${ClusterName}-vnet
 
 [cluster vfxt]
-  Category = DataCache
+  Category = Filesystems
+  IconURL = https://github.com/Azure/cyclecloud-vFXT/raw/master/logo.png
   [[node defaults]]
     Credentials = $Credentials
     Region = $Region
