@@ -18,7 +18,7 @@ ParameterValues.useAvereBackedStorageAccount = true
 [cluster vfxt-hpc]
     FormLayout = selectionpanel
     Category = FileSystems
-    IconUrl = IconURL = https://github.com/Azure/cyclecloud-vFXT/raw/master/images/avere.png
+    IconUrl = https://github.com/Azure/cyclecloud-vFXT/raw/master/images/avere.png
 
     [[node defaults]]
 
