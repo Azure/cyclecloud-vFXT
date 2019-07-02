@@ -1,111 +1,92 @@
-# Microsoft Avere vFXT in Azure CycleCloud
+# Overview
 
-This project will allow you to create and manage a vFXT cluster in CycleCloud.  
+This is a CycleCloud project for deploying and automating an Azure vFXT HPC Cache.
 
-### Creating user managed identities with appropriate permissions
+The underlying ARM template is copied from the Azure Avere [github project](https://github.com/Azure/Avere).
 
-This project relies on a User Managed Identity. Azure CycleCloud will poll your tenant to find identities. When docs are public this repo will point to Avere vFXT documentation.  
+## Prerequisites
 
-There are two separate managed identities required; One for the controller node and
-the other for the storage cluster nodes.  Create the identities and assign them roles
-with the following example using the az-cli.
+The principal requires the Role assignment permission. If you're using a Service Principal
+or a Managed Identity.  
 
-
-
-```bash
-az identity create -g ${ResourceGroup} --name ${IDName1}
-az role assignment create --assignee-object-id ${IDName1PrincipalId} --role "Contributor"
-az identity create -g ${ResourceGroup} --name ${IDName2}
-az role assignment create --assignee-object-id ${IDName2-PrincipalId} --role "Avere Cluster Runtime Operator"
-```
-
-```json
-{
-  "clientId": "396efc5f-175a-4de3-919e-bf65e2697dca",
-  "id": "/subscriptions/f16e7574-eecb-46b9-8adb-855b92f7b572/resourcegroups/demo-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/avere-storage",
-  "location": "westus2",
-  "name": "avere-storage",
-  "principalId": "48f57d96-18d9-41b6-9fc3-1ca4674828de",
-  "resourceGroup": "demo-rg",
-  "tags": {},
-  "tenantId": "e5e7f63d-cf83-4e0b-aec9-25102ff37db3",
-  "type": "Microsoft.ManagedIdentity/userAssignedIdentities"
-}
-```
-
-When you start the vFXT cluster in CycleCloud you'll see the identities in the drop menu.
-
-### Uploading the project to your locker
-
-The cluster scripts and recipes must be staged in your cloud locker.
+One way to do that is to assign the _Avere Cluster Create_ role to the principal
+assigned to CycleCloud by the [az cli](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest)
 
 ```bash
-cd vfxt/projects/avere-vfxt
-cyclecloud project upload azure-locker
+az role assignment create --assignee XXXXXXXX-XXXX-XXXX-XXXXXXXXXXXX --role "Avere Contributor"
 ```
 
-This locker name `azure-locker` may be incorrect.  If you get an error message, retry the command with the locker name in the error message.
+You can find details on the _Avere Contributor_ role [here](https://docs.microsoft.com/en-us/azure/role-based-access-control/built-in-roles#avere-contributor).
 
-### Import the ARM template and cluster template to CycleCloud
+## Cluster Setup
 
-```bash
-cd templates
-cyclecloud import_cluster vFXT  -f az-vfxt-env.txt  -P vnetrawjson=@hpc-cache.json -t
+This cluster requires that a Virtual Network exists and has Storage service endpoints
+configured on the subnet where vFXT will be deployed.  If no such Virtual Network exists,
+then:
+
+* Create a virtual network in the desired region with several subnets (e.g. default, cache,
+storage, compute).
+* Add the Microsoft.Storage service endpoint to (at least) the subnet which will host vFXT.
+
+## CycleCloud project setup
+
+Some of the critical parts of this project are packaged as a [CycleCloud Project](https://docs.microsoft.com/en-us/azure/cyclecloud/projects).
+
+* Upload the vFXT project to your storage account by running `cyclecloud project upload`
+* Add the vFXT cluster template to the CycleCloud cluster menu by running `cyclecloud import_cluster vFXT -c vfxt-hpc -f io.txt -P rawaverejson=@azuredeploy-auto.json -t`
+
+## Configure and Start a vFXT cluster
+
+At this point all of the artifacts have been added to CycleCloud and a cluster may be configured and launched.
+
+Add a new cluster in the CycleCloud UI by the `+` button and find the Azure vFXT
+logo
+![vFXT Icon](/images/vfxt-icon.png)
+
+The primary configuration menu has selections to choose the Virtual Network 
+which will host vFXT cluster.  
+
+<aside class="notice">
+The configuration menu has little validation, and some values need to be globally unique.
+Make sure that the storage account name and control VM name are not re-used elsewhere.
+</aside>
+
+![Configuring a vFXT Cluster](/images/vfxt-configs.png)
+
+With the cluster fully configured it can be started and the vFXT cluster will be
+launched.  All resources and deployments will be created in the **same resource group
+as the VirtualNetwork** that it's created in.
+
+![Deployment in Portal](/images/rg.png)
+
+CycleCloud has started a nameserver which is hosting the vfxt alias.  This is for
+round-robin dns hosting of the VFXT client-facing IPs. Find the access details for
+the cluster in the _Environments_ tab, and in the details of the _vfxt_ deployment.
+
+## Add Storage client and transfer files
+
+Once the cluster is running, the next activity is often to stage files
+into the cache.  Do this by adding a client node to the cluster.
+
+Find the add node button in the actions drop down.  There is a _vfxt-client_ node
+type.
+
+![vFXT Client Node](/images/add-client.png)
+
+Add the new node to the cluster and it will go through the startup phases. 
+When the indicator shows the status as _Started_ you can log into the
+node with the _cyclecloud connect_ command.  Once logged in, you can inspect
+the filesystem properties.
+
+```bash 
+$ df -h
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sda2        30G  1.6G   28G   6% /
+/dev/sda1       497M   79M  418M  16% /boot
+/dev/sdb1        16G   45M   15G   1% /mnt/resource
+vfxt:/msazure   8.0E     0  8.0E   0% /cache
 ```
 
-Now the new cluster menu in CycleCloud will contain a VFXT cluster ready to be instantiated. 
+Because Avere vFXT is backed by an Azure Storage Account you will see an 
+extremely large capacity filesystem at the _/cache_ mountpoint.
 
-### Create and Launch a vFXT Cluster
-
-In the [+] Add Cluster menu find the `vFXT` cluster template that you just added and select it.  This will bring up a number of menu options for the cluster.  The defaults for this cluster are sufficient but Name, ManagedId and Tennant ID must all be selected from the menus.
-
-When the menu is complete, then save the configuration.  You'll be linked back to the clusters page and you'll see your new cluster listed in the clusters table.
-
-Start the cluster!
-
-The file `hpc-cache.json` is an ARM template.  The cluster will create a virtual network, route table, subnets and storage account via ARM template deployment.  These resources can be seen by selecting the Environments tab of the cluster. 
-
-When the deployment is complete, CycleCloud launches the shepherd node which determines low-level cluster configurations then uses the CycleCloud autoscale API to launch the vFXT cluster nodes.  The first host that comes up, usually `vfxt-1` in CycleCloud will host the vFXT administrative webpage.
-
-It's advised to keep production resources off of the public internet. In this cluster the shepherd host acts as a jump box.  So while you can access the shepherd directly by running `cyclecloud connect shepherd -c ${ClusterName}` you can't access the vfxt nodes directly.  One suggestion to access the UI on the vFXT node is to tunnel the https port to your local machine:
-
-    ssh -L 9443:${VfxtPrivateIp}:443 cyclecloud@${ShepherdPublicIP}
-
-Then you can see the webpage by going to `https://localhost:9443` in a browser.
-
-### Mounting clients in the cluster
-
-An example template is contributed here in the templates directory.  
-
-```bash
-diff pbspro.txt pbspro-vfxt.txt
-24c24,31
->         dnsmasq.ns.clusterUID = $VfxtCluster
->         run_list = recipe[dnsmasq::client],recipe[cyclecloud]
-> 
->         [[[configuration cyclecloud.mounts.vfxt]]]
->         type = nfs
->         mountpoint = /mnt/vfxt
->         export_path = /azure
->         address = vfxt
-93a101,104
->         [[[parameter VfxtCluster]]]
->         Description = vFXT Cluster
->         Config.Plugin = pico.form.QueryDropdown
->         Config.Query = '''select ClusterName as Name from Cloud.Cluster where state === "started" '''
-```
-
-Primarily, we add the vFXT mount block.  This mount block then depends on the availability of name resolution for the `vfxt` hostname which is provided by the addition of the `dnsmasq::client` recipe in the run_list.  And to make the cluster name selection easier we add a query dropdown selector.
-
-### External Code
-
-This project depends on the [Avere SDK](https://github.com/Azure/AvereSDK). A tar
-archive of this repo must be added to the project cluster-init.  
-
-```bash
-git clone git@github.com:Azure/AvereSDK.git
-tar -czvf AvereSDK AvereSDK.tgz
-mv AvereSDK.tgz cyclecloud-vFXT/projects/avere-vfxt/specs/vfxt/cluster-init/files/
-cd cyclecloud-vFXT/projects/avere-vfxt
-cyclecloud project upload
-```

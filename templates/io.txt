@@ -1,0 +1,258 @@
+
+[environment vfxt]
+ManagedLifecycle=true
+Region = $Region
+TemplateContents = $rawaverejson
+## Vnet RG == ARM RG because of bug in environments
+## Work Item 4770922 
+Azure.ResourceGroup = ${Subnet.ResourceGroup}
+ParameterValues.location = $Region
+ParameterValues.virtualNetworkResourceGroup = ${Subnet.ResourceGroup}
+ParameterValues.virtualNetworkName = ${Subnet.VirtualNetwork}
+ParameterValues.virtualNetworkSubnetName = ${Subnet.Name}
+ParameterValues.createVirtualNetwork = false
+ParameterValues.useAvereBackedStorageAccount = true
+
+[noderef nameserver]
+
+[cluster vfxt-hpc]
+    FormLayout = selectionpanel
+    Category = FileSystems
+    IconUrl = IconURL = https://github.com/Azure/cyclecloud-vFXT/raw/master/images/avere.png
+
+    [[node defaults]]
+
+        Credentials = $Credentials
+        Region = $Region
+        KeyPairLocation = ~/.ssh/cyclecloud.pem
+        ImageName = $ImageName
+        SubnetId = $SubnetId
+
+        [[[configuration]]]
+
+        dnsmasq.hoststring = ${vfxt.outputs.vserver_ips}
+        dnsmasq.alias = $CacheAddress
+
+        #[[[cluster-init cyclecloud/pbspro:default]]]
+        [[[cluster-init cyclecloud-vfxt:default:1.0.0]]]
+
+    [[node nameserver]]
+        IsReturnProxy = $ReturnProxy
+        MachineType = Standard_B1s
+
+        [[[configuration]]]
+        run_list = recipe[dnsmasq::mngr]
+
+        [[[network-interface eth0]]]
+        AssociatePublicIpAddress = $ReturnProxy
+
+        [[[input-endpoint ganglia]]]
+        PrivatePort = 8652
+        PublicPort = 8652
+
+        [[[input-endpoint SSH]]]
+        PrivatePort = 22
+        PublicPort = 22
+
+    [[nodearray vfxt-client]]
+        Priority = 500
+        MachineType = $ClientMachineType
+        AdditionalClusterInitSpecs = $ExecuteClusterInitSpecs
+        Interruptible = False
+        MaxCount = $MaxCount
+
+        [[[configuration]]]
+        run_list = recipe[dnsmasq::client],recipe[cyclecloud]
+        cyclecloud.maintenance_converge.enabled = false
+        dnsmasq.server = ${nameserver.instance.privateip}
+
+        [[[configuration cyclecloud.mounts.cache]]]
+        type = nfs
+        mountpoint = $CacheMountpoint
+        export_path = $CacheExport
+        address = $CacheAddress
+        options = $CacheOptions
+        
+[parameters About]
+Order = 1
+
+    [[parameters About Azure vFXT]]
+
+        [[[parameter Azure vFXT]]]
+        HideLabel = true
+        Config.Plugin = pico.widget.HtmlTemplateWidget
+        Config.Template := "Faster, more accessible data storage for high-performance computing at the edge"
+
+        [[[parameter Readme]]]
+        HideLabel = true
+        Config.Plugin = pico.widget.HtmlTemplateWidget
+        Config.Template = "Follow the instructions in the <a href="https://github.com/Azure/cyclecloud-vfxt" target=\"_blank\">README</a> for details on instructions on extending and configuring the Project for your environment."
+
+
+[parameters vFXT Configurations]
+Description = Configurations for new vFXT
+Order = 9
+
+    [[parameters Cloud Service Provider Configuration]]
+    Description = Configure the Cloud Provider account options.
+    Order = 3
+
+        [[[parameter Region]]]
+        Label = Region
+        Description = Deployment Location
+        ParameterType = Cloud.Region
+
+    [[parameters Networking]]
+    Description = Choose subnet for Deployment
+    Order = 9
+        [[[parameter Subnet]]]
+        Label = Cache Subnet
+        Config.Plugin = "pico.form.QueryDropdown"
+        Config.PlaceholderText = Choose a subnet
+        Config.Query := "select [Name=Name; VirtualNetwork=VirtualNetwork; ResourceGroup=ResourceGroup;] as Value, strcat(ResourceGroup, \": \", VirtualNetwork,\"-\",Name, \" [\", AddressPrefix, \"]\") as Label using azure.data.subnet_datasource order by ResourceGroup, VirtualNetwork, Name"
+        Config.Parameters := [Credential=[ParameterType="Cloud.Credentials"; Required=true;]; Location=[ParameterType="Cloud.Region"; Required=true;];]
+
+        [[[parameter SubnetId]]]
+        Label = Client Subnet
+        Description = Subnet Resource Path (ResourceGroup/VirtualNetwork/Subnet)
+        ParameterType = Azure.Subnet
+        Required = True
+
+    [[parameters Avere Non-Repeatable]]
+    Description = Do not repeat values - globally unique
+    Order = 10
+
+    [[[parameter vfxt_avereBackedStorageAccountName]]]
+        Label = Storage Account Name
+        DefaultValue = myaverebackedstoracct
+
+    [[[parameter vfxt_controllerName]]]        
+        Label = Control VM Name
+        DefaultValue = vfxtControllerX
+
+    [[parameters Avere Repeatable]]
+    Description = OK to Repeat
+    Order = 11
+
+    [[[parameter vfxt_avereClusterName]]]
+        Label = Avere Cluster Name
+        DefaultValue = vfxtcluster
+
+    [[[parameter vfxt_avereNodeCount]]]
+        Label = Node Count
+        DefaultValue = 3
+        Config.Plugin = pico.form.NumberTextBox
+        Config.MinValue = 3
+        Config.MaxValue = 12
+        Config.IntegerOnly = true
+
+    [[[parameter vfxt_avereCacheSizeGB]]]
+        Label = Disk Cache Size (GB)
+    DefaultValue = 1024
+    Description = Avere Cache Size
+    Config.Plugin = pico.control.AutoCompleteDropdown
+    [[[[list Config.Entries]]]]
+        Name = 1024
+        Value = 1024
+    [[[[list Config.Entries]]]]
+        Name = 4096
+        Value = 4096
+
+    [[[parameter vfxt_controllerAuthenticationType]]]
+        Label = Auth Type
+        Hidden = true
+        DefaultValue = "password"
+
+    [[[parameter vfxt_controllerAdminUsername]]]
+        Label = Control Admin Name
+        DefaultValue = vfxtadmin
+
+    [[[parameter vfxt_controllerPassword]]]
+        Label = Control Admin Pass
+        ParameterType = Password
+
+    [[[parameter vfxt_adminPassword]]]
+        Label = Cluster Admin Pass
+        ParameterType = Password
+
+[parameters Advanced Settings]
+Order = 20
+
+    [[parameters Azure Settings]]
+    Description = Provider Account Name
+    Order = 10 
+
+        [[[parameter Credentials]]]
+        Description = The credentials for the cloud provider
+        ParameterType = Cloud.Credentials
+
+
+    [[parameters Client Configuration]]
+    Description = "Specify OS, CycleCloud Projects for cache client nodes."
+    Order = 20
+
+        [[[parameter ImageName]]]
+        Label = Base OS
+        ParameterType = Cloud.Image
+        Config.OS = linux
+        DefaultValue = cycle.image.centos7
+    
+        [[[parameter ExecuteClusterInitSpecs]]]
+        Label = Execute Cluster-Init
+        DefaultValue = =undefined
+        Description = Cluster init specs to apply to non-GPU execute nodes
+        ParameterType = Cloud.ClusterInitSpecs
+
+        [[[parameter MaxCount]]]
+        Label = Max Machines
+        Description = The total number of client machines to start
+        DefaultValue = 5
+        Config.Plugin = pico.form.NumberTextBox
+        Config.MinValue = 1
+        Config.MaxValue = 50
+        Config.IntegerOnly = true
+
+    [[parameters Nameserver]]
+    Description = "VM for vFXT round-robin nameserver"
+    Order = 30
+
+        [[[parameter NameserverMachineType]]]
+        Label = Nameserver Type
+        Description = The machine type for HA master array.
+        ParameterType = Cloud.MachineType
+        DefaultValue = Standard_B2s
+
+        [[[parameter ReturnProxy]]]
+        Label = Return Proxy
+        DefaultValue = true
+        ParameterType = Boolean
+        Config.Label = Use SSH tunnel to connect to CycleCloud (required if direct access is blocked)
+
+        [[[parameter ClientMachineType]]]
+        Label = Client Type
+        Description = The machine type for client nodes
+        ParameterType = Cloud.MachineType
+        DefaultValue = Standard_D2s_v3 
+        Config.Multiselect = false
+
+    [[parameters Cache Mount]]
+    Description = Avere mount settings (no config required)
+    Order = 40
+
+        [[[parameter CacheMountpoint]]]
+        Label = Cache Mountpoint
+        DefaultValue = /cache
+
+        [[[parameter CacheExport]]]
+        Label = Server Export Path
+        Hidden = true
+        DefaultValue = /msazure
+
+        [[[parameter CacheAddress]]]
+        Label = NFS Server Name or Address
+        DefaultValue = vfxt
+        Hidden = true
+
+        [[[parameter CacheOptions]]]
+        Label = Mount Options
+        DefaultValue = "hard,proto=tcp,mountproto=tcp,retry=30,actimeo=3600,nolock"
